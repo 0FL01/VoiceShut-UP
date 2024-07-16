@@ -1,0 +1,8 @@
+version: '3.8'
+services:
+  telega-whisper:
+    build: .
+    container_name: telega-whisper
+    env_file:
+      - .env
+    restart: unless-stopped

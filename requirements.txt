@@ -1,0 +1,5 @@
+aiogram
+pydub
+groq
+moviepy
+python-dotenv
