@@ -11,10 +11,7 @@
 
 # Требования
 
-    Python 3.10
-    ffmpeg
-    libasound2-dev
-    gcc
+    docker
 
 # Установка
 
