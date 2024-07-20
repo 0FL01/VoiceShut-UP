@@ -11,8 +11,7 @@ rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Копируем файлы в контейнер
-COPY requirements.txt requirements.txt
-COPY . .
+COPY requirements.txt bot.py ./
 
 # Устанавливаем зависимости
 RUN pip install --upgrade pip && pip install -r requirements.txt
