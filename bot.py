@@ -2,16 +2,22 @@ import asyncio
 import io
 import os
 import html
+import re
 import aiohttp
 import subprocess
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.types import Message, Voice, Video, Document, Animation, Sticker
-from aiogram.utils.markdown import hbold, hitalic
 from aiogram.filters import Command
 from groq import AsyncGroq
 from pydub import AudioSegment
 import moviepy.editor as mp
 from dotenv import load_dotenv
+import tempfile
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -23,6 +29,39 @@ MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB in bytes
 
 router: Router = Router()
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+
+def format_html(text):
+    def code_block_replacer(match):
+        code = match.group(2)
+        language = match.group(1) or ''
+        escaped_code = html.escape(code.strip())
+        return f'<pre><code class="{language}">{escaped_code}</code></pre>'
+    
+    # Replace code blocks with triple backticks
+    text = re.sub(r'```(\w+)?\n(.*?)```', code_block_replacer, text, flags=re.DOTALL)
+    
+    # Replace code blocks with single backticks
+    text = re.sub(r'`(\w+)\n(.*?)`', code_block_replacer, text, flags=re.DOTALL)
+    
+    # Replace list markers with HTML tags
+    text = re.sub(r'^\* ', '• ', text, flags=re.MULTILINE)
+    
+    # Replace bold text
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    
+    # Replace italic text
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    
+    # Replace inline code
+    text = re.sub(r'`(.*?)`', lambda m: f'<code>{html.escape(m.group(1))}</code>', text)
+    
+    # Remove Markdown-style headers (##, ###, etc.)
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    
+    # Remove any HTML tags that Telegram doesn't support
+    text = re.sub(r'<(?!/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|span)(?:\s|>))[^>]*>', '', text)
+    
+    return text
 
 async def audio_to_text(file_path: str) -> str:
     """Принимает путь к аудио файлу, возвращает текст файла."""
@@ -50,21 +89,21 @@ async def save_audio_as_mp3(bot: Bot, file: types.File, file_id: str, file_uniqu
     file_info = await bot.get_file(file_id)
     file_content = io.BytesIO()
     await bot.download_file(file_info.file_path, file_content)
-    os.makedirs('audio_files', exist_ok=True)
-    input_path = f"audio_files/audio-{file_unique_id}"
-    output_path = f"audio_files/audio-{file_unique_id}.mp3"
-
-    with open(input_path, 'wb') as f:
-        f.write(file_content.getvalue())
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
+        temp_path = temp_file.name
 
     if file_info.file_path.lower().endswith('.oga'):
-        await convert_oga_to_mp3(input_path, output_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.oga') as input_file:
+            input_file.write(file_content.getvalue())
+            input_path = input_file.name
+        await convert_oga_to_mp3(input_path, temp_path)
+        os.unlink(input_path)
     else:
-        audio = AudioSegment.from_file(input_path, format=file_info.file_path.split('.')[-1])
-        audio.export(output_path, format="mp3")
+        audio = AudioSegment.from_file(io.BytesIO(file_content.getvalue()), format=file_info.file_path.split('.')[-1])
+        audio.export(temp_path, format="mp3")
 
-    os.remove(input_path)  # Удаляем временный файл
-    return output_path
+    return temp_path
 
 async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     """Скачивает видео и сохраняет аудиодорожку в формате mp3."""
@@ -74,29 +113,31 @@ async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     video_file_info = await bot.get_file(video.file_id)
     video_file = io.BytesIO()
     await bot.download_file(video_file_info.file_path, video_file)
-    os.makedirs('video_files', exist_ok=True)
-    video_path = f"video_files/video-{video.file_unique_id}.mp4"
-    with open(video_path, "wb") as f:
-        f.write(video_file.getvalue())
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as video_temp_file:
+        video_temp_file.write(video_file.getvalue())
+        video_path = video_temp_file.name
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as audio_temp_file:
+        audio_path = audio_temp_file.name
 
     video_clip = mp.VideoFileClip(video_path)
-    audio_path = f"video_files/audio-{video.file_unique_id}.mp3"
     video_clip.audio.write_audiofile(audio_path, codec='libmp3lame', ffmpeg_params=['-y'])
     video_clip.close()
 
-    os.remove(video_path)  # Удаляем временный видеофайл
+    os.unlink(video_path)
     return audio_path
 
 async def summarize_text(text: str) -> str:
     """Создает краткое резюме текста с использованием доступной модели Groq."""
     chat_completion = await groq_client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "Отвечаешь всегда на русском языке, ты ассистент, пишешь краткое суммарайз данной голосовухи, в краткой сводке можешь использовать стиль общения как в источнике, не используй смайлики или emoji."},
-            {"role": "user", "content": f"Напиши пересказ текста, но при этом сохрани все ключевые детали, не более 50 слов: {text}"}
+            {"role": "system", "content": "Отвечаешь всегда на русском языке, нельзя использовать смайлики или emoji.  Используй следующие обозначения для форматирования: ** для жирного текста, * для курсива, также при работе с кодом используй тройные обратные кавычки ```python для блоков кода, * в начале строки для элементов списка."},
+            {"role": "user", "content": f" Обработайте этот текст из аудио сообщения. Определите ключевые моменты и темы в тексте. На основе этих ключевых моментов создайте краткое резюме, которое передает весь смысл оригинального сообщения, финальный вывод должен быть в лёгком стиле, так же необходимо подсветить ключевые моменты.: {text}"}
         ],
         model="gemma2-9b-it",
-        temperature=1,
-        max_tokens=2048,
+        temperature=0.1,
+        max_tokens=4096,
         top_p=1,
         stream=False
     )
@@ -123,18 +164,22 @@ async def process_audio(message: Message, bot: Bot, audio_path: str):
         transcripted_text = await audio_to_text(audio_path)
         if transcripted_text:
             summary = await summarize_text(transcripted_text)
+            formatted_summary = format_html(summary)
             response = (
-                f"{hbold('Transcription:')}\n\n"
-                f"{transcripted_text}\n\n"
-                f"{hbold('Summary:')}\n\n"
-                f"<i>{html.escape(summary)}</i>"
+                f"<b>Transcription:</b>\n\n"
+                f"{html.escape(transcripted_text)}\n\n"
+                f"<b>Summary:</b>\n\n"
+                f"{formatted_summary}"
             )
             messages = split_message(response, MAX_MESSAGE_LENGTH)
             for msg in messages:
                 await message.reply(text=msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error processing audio: {str(e)}")
+        await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")
     finally:
-        # Удаляем аудиофайл после обработки, независимо от результата
-        os.remove(audio_path)
+        if os.path.exists(audio_path):
+            os.unlink(audio_path)
 
 @router.message(F.content_type.in_({"voice", "audio", "document"}))
 async def process_audio_message(message: Message, bot: Bot):
@@ -153,10 +198,8 @@ async def process_audio_message(message: Message, bot: Bot):
         audio_path = await save_audio_as_mp3(bot, file, file.file_id, file.file_unique_id)
         await process_audio(message, bot, audio_path)
     except Exception as e:
+        logger.error(f"Error processing audio message: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")
-        # В случае ошибки также удаляем файл, если он был создан
-        if 'audio_path' in locals():
-            os.remove(audio_path)
 
 @router.message(F.content_type == "video")
 async def process_video_message(message: Message, bot: Bot):
@@ -170,10 +213,8 @@ async def process_video_message(message: Message, bot: Bot):
         audio_path = await save_video_as_mp3(bot, message.video)
         await process_audio(message, bot, audio_path)
     except Exception as e:
+        logger.error(f"Error processing video message: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке видео: {str(e)}")
-        # В случае ошибки также удаляем файл, если он был создан
-        if 'audio_path' in locals():
-            os.remove(audio_path)
 
 @router.message(F.content_type.in_({"animation", "sticker"}))
 async def process_unsupported_content(message: Message):
