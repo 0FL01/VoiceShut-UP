@@ -79,7 +79,7 @@ async def audio_to_text(file_path: str) -> str:
 
 async def convert_oga_to_mp3(input_path: str, output_path: str):
     """Конвертирует .oga файл в .mp3 с помощью ffmpeg."""
-    command = ['ffmpeg', '-y', '-i', input_path, '-acodec', 'libmp3lame', output_path]
+    command = ['ffmpeg', '-y', '-i', input_path, '-c:a', 'libmp3lame', '-q:a', '3', '-ac', '1', '-ar', '22050', output_path]
     process = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.PIPE,
