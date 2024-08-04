@@ -6,7 +6,7 @@ import re
 import aiohttp
 import subprocess
 from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.types import Message, Voice, Video, Document, Animation, Sticker
+from aiogram.types import Message, Voice, Video, Document, Animation, Sticker, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import Command
 from groq import AsyncGroq
 from pydub import AudioSegment
@@ -14,6 +14,7 @@ import moviepy.editor as mp
 from dotenv import load_dotenv
 import tempfile
 import logging
+import google.generativeai as genai
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -23,12 +24,17 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAX_MESSAGE_LENGTH = 4096
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB in bytes
 
 router: Router = Router()
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+genai.configure(api_key=GOOGLE_API_KEY)
+
+# Глобальная переменная для хранения выбранной модели
+current_model = "gemma2-9b-it"
 
 
 def format_html(text):
@@ -37,34 +43,34 @@ def format_html(text):
         language = match.group(1) or ''
         escaped_code = html.escape(code.strip())
         return f'<pre><code class="{language}">{escaped_code}</code></pre>'
-    
+
     # Replace code blocks with triple backticks
     text = re.sub(r'```(\w+)?\n(.*?)```', code_block_replacer, text, flags=re.DOTALL)
-    
+
     # Replace code blocks with single backticks
     text = re.sub(r'`(\w+)\n(.*?)`', code_block_replacer, text, flags=re.DOTALL)
-    
+
     # Replace list markers with HTML tags
     text = re.sub(r'^\* ', '• ', text, flags=re.MULTILINE)
-    
+
     # Replace bold text
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    
+
     # Replace italic text
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    
+
     # Replace inline code
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    
+
     # Remove Markdown-style headers (##, ###, etc.)
     text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
-    
+
     # Escape special HTML characters in the remaining text
     text = html.escape(text, quote=False)
-    
+
     # Unescape the HTML tags we've explicitly added
     text = re.sub(r'&lt;(/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre))&gt;', r'<\1>', text)
-    
+
     return text
 
 
@@ -94,7 +100,7 @@ async def save_audio_as_mp3(bot: Bot, file: types.File, file_id: str, file_uniqu
     file_info = await bot.get_file(file_id)
     file_content = io.BytesIO()
     await bot.download_file(file_info.file_path, file_content)
-    
+
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
         temp_path = temp_file.name
 
@@ -118,7 +124,7 @@ async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     video_file_info = await bot.get_file(video.file_id)
     video_file = io.BytesIO()
     await bot.download_file(video_file_info.file_path, video_file)
-    
+
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as video_temp_file:
         video_temp_file.write(video_file.getvalue())
         video_path = video_temp_file.name
@@ -134,56 +140,95 @@ async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     return audio_path
 
 async def summarize_text(text: str) -> str:
-    """Создает краткое резюме текста с использованием доступной модели Groq."""
-    chat_completion = await groq_client.chat.completions.create(
-        messages=[
-{
-    "role": "system",
-    "content": "Вы - высококвалифицированный ассистент по обработке и анализу текста, специализирующийся на создании кратких и информативных резюме голосовых сообщений. Ваши ответы всегда должны быть на русском языке. Избегайте использования эмодзи, смайликов и разговорных выражений, таких как 'говорящий' или 'говоритель'. При форматировании текста используйте следующие обозначения: * **жирный текст** для выделения ключевых понятий * *курсив* для обозначения важных, но второстепенных деталей * ```python для обозначения начала и конца блоков кода * * в начале строки для создания маркированных списков. Ваша задача - создавать краткие, но содержательные резюме, выделяя наиболее важную информацию и ключевые моменты из предоставленного текста. Стремитесь к ясности и лаконичности изложения, сохраняя при этом основной смысл и контекст исходного сообщения."
-},
-{
-    "role": "user",
-    "content": f"""
-    Ваша цель - обработать и проанализировать следующий текст, полученный из расшифровки голосового сообщения:
+    global current_model
+    if current_model == "gemma2-9b-it":
+        chat_completion = await groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Вы - высококвалифицированный ассистент по обработке и анализу текста, специализирующийся на создании кратких и информативных резюме голосовых сообщений. Ваши ответы всегда должны быть на русском языке. Избегайте использования эмодзи, смайликов и разговорных выражений, таких как 'говорящий' или 'говоритель'. При форматировании текста используйте следующие обозначения: * **жирный текст** для выделения ключевых понятий * *курсив* для обозначения важных, но второстепенных деталей * ```python для обозначения начала и конца блоков кода * * в начале строки для создания маркированных списков. Ваша задача - создавать краткие, но содержательные резюме, выделяя наиболее важную информацию и ключевые моменты из предоставленного текста. Стремитесь к ясности и лаконичности изложения, сохраняя при этом основной смысл и контекст исходного сообщения."
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+                    Ваша цель - обработать и проанализировать следующий текст, полученный из расшифровки голосового сообщения:
 
-    {text}
+                    {text}
 
-    Пожалуйста, создайте краткое резюме, соблюдая следующие правила:
-    1. Начните резюме с горизонтальной линии (---) для визуального разделения.
-    2. Ограничьте абстрактное резюме максимум шестью предложениями.
-    3. Выделите **жирным шрифтом** ключевые слова и фразы в каждом предложении.
-    4. Если в тексте присутствуют числовые данные или статистика, включите их в резюме, выделив *курсивом*.
-    5. Определите основную тему или темы сообщения и укажите их в начале резюме.
-    6. Если в тексте есть какие-либо действия или рекомендации, выделите их в отдельный маркированный список.
-    7. В конце резюме добавьте короткий параграф (2-3 предложения) с аналитическим заключением или выводом на основе содержания сообщения.
+                    Пожалуйста, создайте краткое резюме, соблюдая следующие правила:
+                    1. Начните резюме с горизонтальной линии (---) для визуального разделения.
+                    2. Ограничьте абстрактное резюме максимум шестью предложениями.
+                    3. Выделите **жирным шрифтом** ключевые слова и фразы в каждом предложении.
+                    4. Если в тексте присутствуют числовые данные или статистика, включите их в резюме, выделив *курсивом*.
+                    5. Определите основную тему или темы сообщения и укажите их в начале резюме.
+                    6. Если в тексте есть какие-либо действия или рекомендации, выделите их в отдельный маркированный список.
+                    7. В конце резюме добавьте короткий параграф (2-3 предложения) с аналитическим заключением или выводом на основе содержания сообщения.
 
-    Создайте краткое резюме текста. Ваше резюме должно быть информативным, структурированным и легким для быстрого восприятия.
-    """
-}
+                    Создайте краткое резюме текста. Ваше резюме должно быть информативным, структурированным и легким для быстрого восприятия.
+                    """
+                }
+            ],
+            model="gemma2-9b-it",
+            temperature=0.5,
+            max_tokens=4096,
+            top_p=1,
+            stream=False
+        )
+        return chat_completion.choices[0].message.content
+    elif current_model == "gemini-1.5-flash":
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content([
+            "Вы - высококвалифицированный ассистент по обработке и анализу текста, специализирующийся на создании кратких и информативных резюме голосовых сообщений. Ваши ответы всегда должны быть на русском языке. Избегайте использования эмодзи, смайликов и разговорных выражений, таких как 'говорящий' или 'говоритель'. При форматировании текста используйте следующие обозначения: * **жирный текст** для выделения ключевых понятий * *курсив* для обозначения важных, но второстепенных деталей * ```python для обозначения начала и конца блоков кода * * в начале строки для создания маркированных списков. Ваша задача - создавать краткие, но содержательные резюме, выделяя наиболее важную информацию и ключевые моменты из предоставленного текста. Стремитесь к ясности и лаконичности изложения, сохраняя при этом основной смысл и контекст исходного сообщения.",
+            f"""
+            Ваша цель - обработать и проанализировать следующий текст, полученный из расшифровки голосового сообщения:
 
-        ],
-        model="gemma2-9b-it",
-        temperature=0.5,
-        max_tokens=4096,
-        top_p=1,
-        stream=False
-    )
-    return chat_completion.choices[0].message.content
+            {text}
+
+            Пожалуйста, создайте краткое резюме, соблюдая следующие правила:
+            1. Начните резюме с горизонтальной линии (---) для визуального разделения.
+            2. Ограничьте абстрактное резюме максимум шестью предложениями.
+            3. Выделите **жирным шрифтом** ключевые слова и фразы в каждом предложении.
+            4. Если в тексте присутствуют числовые данные или статистика, включите их в резюме, выделив *курсивом*.
+            5. Определите основную тему или темы сообщения и укажите их в начале резюме.
+            6. Если в тексте есть какие-либо действия или рекомендации, выделите их в отдельный маркированный список.
+            7. В конце резюме добавьте короткий параграф (2-3 предложения) с аналитическим заключением или выводом на основе содержания сообщения.
+
+            Создайте краткое резюме текста. Ваше резюме должно быть информативным, структурированным и легким для быстрого восприятия.
+            """
+        ])
+        return response.text
 
 def split_message(message: str, max_length: int) -> list:
     """Разбивает сообщение на части длиной не более max_length."""
     return [message[i:i + max_length] for i in range(0, len(message), max_length)]
 
+def get_model_selection_keyboard():
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Сменить модель")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Обработчик команды /start"""
     welcome_message = (
         "Привет! Я бот, который может транскрибировать и суммировать голосовые сообщения, видео и аудиофайлы. "
         "Просто отправь мне голосовое сообщение, видео или аудиофайл (mp3, wav, oga), и я преобразую его в текст и создам краткое резюме.\n\n"
-        "P.S Данный бот работает на мощностях Groq, использует две модели: whisper-large-v3 и gemma2-9b-it\n\n"
+        f"Текущая модель: {current_model}\n\n"
         f"Важно: максимальный размер файла для обработки - {MAX_FILE_SIZE // (1024 * 1024)} МБ."
     )
-    await message.answer(welcome_message)
+    await message.answer(welcome_message, reply_markup=get_model_selection_keyboard())
+
+@router.message(F.text == "Сменить модель")
+async def change_model(message: types.Message):
+    global current_model
+    if current_model == "gemma2-9b-it":
+        current_model = "gemini-1.5-flash"
+    else:
+        current_model = "gemma2-9b-it"
+    await message.answer(f"Модель изменена на {current_model}", reply_markup=get_model_selection_keyboard())
 
 async def process_audio(message: Message, bot: Bot, audio_path: str):
     """Обрабатывает аудио, выполняет транскрипцию и суммаризацию."""
@@ -257,13 +302,13 @@ async def process_unsupported_content(message: Message):
 
 @router.message(F.text)
 async def process_text_message(message: Message):
-    """Handles incoming text messages"""
-    response = (
-        "Извините, я работаю только с голосовыми сообщениями, видео и аудиофайлами (mp3, wav, oga). "
-        "Пожалуйста, отправьте голосовое сообщение, видео или аудиофайл. "
-        f"Максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ."
-    )
-    await message.reply(text=response)
+    if message.text != "Сменить модель":
+        response = (
+            "Извините, я работаю только с голосовыми сообщениями, видео и аудиофайлами (mp3, wav, oga). "
+            "Пожалуйста, отправьте голосовое сообщение, видео или аудиофайл. "
+            f"Максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ."
+        )
+        await message.reply(text=response, reply_markup=get_model_selection_keyboard())
 
 async def main():
     bot: Bot = Bot(token=BOT_TOKEN)
@@ -273,3 +318,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

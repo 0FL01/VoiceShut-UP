@@ -2,4 +2,5 @@ aiogram
 pydub
 groq
 moviepy
+google-generativeai
 python-dotenv
