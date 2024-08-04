@@ -6,7 +6,7 @@ import re
 import aiohttp
 import subprocess
 from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.types import Message, Voice, Video, Document, Animation, Sticker
+from aiogram.types import Message, Voice, Video, Document, Animation, Sticker, VideoNote
 from aiogram.filters import Command
 from groq import AsyncGroq
 from pydub import AudioSegment
@@ -110,12 +110,13 @@ async def save_audio_as_mp3(bot: Bot, file: types.File, file_id: str, file_uniqu
 
     return temp_path
 
-async def save_video_as_mp3(bot: Bot, video: Video) -> str:
-    """Скачивает видео и сохраняет аудиодорожку в формате mp3."""
-    if video.file_size > MAX_FILE_SIZE:
+
+async def save_video_note_as_mp3(bot: Bot, video_note: VideoNote) -> str:
+    """Скачивает видео-заметку (кружочек) и сохраняет аудиодорожку в формате mp3."""
+    if video_note.file_size > MAX_FILE_SIZE:
         raise ValueError("Файл слишком большой")
 
-    video_file_info = await bot.get_file(video.file_id)
+    video_file_info = await bot.get_file(video_note.file_id)
     video_file = io.BytesIO()
     await bot.download_file(video_file_info.file_path, video_file)
     
@@ -126,12 +127,35 @@ async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as audio_temp_file:
         audio_path = audio_temp_file.name
 
-    video_clip = mp.VideoFileClip(video_path)
-    video_clip.audio.write_audiofile(audio_path, codec='libmp3lame', ffmpeg_params=['-y'])
-    video_clip.close()
+    # Используем ffmpeg для извлечения аудио из видео
+    command = ['ffmpeg', '-y', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg error: {stderr.decode()}")
 
     os.unlink(video_path)
     return audio_path
+
+@router.message(F.content_type == "video_note")
+async def process_video_note_message(message: Message, bot: Bot):
+    """Обрабатывает видео-заметки (кружочки), извлекает аудио, транскрибирует в текст и создает резюме."""
+    if message.video_note.file_size > MAX_FILE_SIZE:
+        await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваша видео-заметка слишком большая.")
+        return
+
+    await message.reply("Обрабатываю вашу видео-заметку, это может занять некоторое время...")
+    try:
+        audio_path = await save_video_note_as_mp3(bot, message.video_note)
+        await process_audio(message, bot, audio_path)
+    except Exception as e:
+        logger.error(f"Error processing video note message: {str(e)}")
+        await message.reply(f"Произошла ошибка при обработке видео-заметки: {str(e)}")
+
 
 async def summarize_text(text: str) -> str:
     """Создает краткое резюме текста с использованием доступной модели Groq."""
@@ -228,6 +252,31 @@ async def process_audio_message(message: Message, bot: Bot):
         logger.error(f"Error processing audio message: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")
 
+@router.message(F.content_type.in_({"voice", "audio", "document", "video", "video_note"}))
+async def process_media_message(message: Message, bot: Bot):
+    """Обрабатывает голосовые сообщения, аудио, документы, видео и видео-заметки."""
+    file = message.voice or message.audio or message.document or message.video or message.video_note
+    if file.file_size > MAX_FILE_SIZE:
+        await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваш файл слишком большой.")
+        return
+
+    if message.document and not message.document.file_name.lower().endswith(('.mp3', '.wav', '.oga')):
+        await message.reply("Извините, я могу обрабатывать только аудиофайлы форматов mp3, wav и oga.")
+        return
+
+    await message.reply("Обрабатываю ваш медиафайл, это может занять некоторое время...")
+    try:
+        if message.video:
+            audio_path = await save_video_as_mp3(bot, message.video)
+        elif message.video_note:
+            audio_path = await save_video_note_as_mp3(bot, message.video_note)
+        else:
+            audio_path = await save_audio_as_mp3(bot, file, file.file_id, file.file_unique_id)
+        await process_audio(message, bot, audio_path)
+    except Exception as e:
+        logger.error(f"Error processing media message: {str(e)}")
+        await message.reply(f"Произошла ошибка при обработке медиафайла: {str(e)}")
+
 @router.message(F.content_type == "video")
 async def process_video_message(message: Message, bot: Bot):
     """Принимает все видео сообщения, извлекает аудио, транскрибирует в текст и создает резюме."""
@@ -249,7 +298,7 @@ async def process_unsupported_content(message: Message):
     content_type = "анимацией" if isinstance(message.content_type, Animation) else "гифками и стикерами"
     response = (
         f"Извините, я не могу работать с {content_type}. "
-        "Я обрабатываю только голосовые сообщения, видео и аудиофайлы (mp3, wav, oga). "
+        "Я обрабатываю только голосовые сообщения, видео, видео-заметки и аудиофайлы (mp3, wav, oga). "
         "Пожалуйста, отправьте один из поддерживаемых типов файлов. "
         f"Максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ."
     )
