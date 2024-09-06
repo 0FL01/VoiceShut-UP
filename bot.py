@@ -148,13 +148,13 @@ async def process_video_note_message(message: Message, bot: Bot):
         await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваша видео-заметка слишком большая.")
         return
 
-    await message.reply("Обрабатываю вашу видео-заметку, это может занять некоторое время...")
+    await message.reply("Обрабатываю ваше видео, это может занять некоторое время...")
     try:
         audio_path = await save_video_note_as_mp3(bot, message.video_note)
         await process_audio(message, bot, audio_path)
     except Exception as e:
         logger.error(f"Error processing video note message: {str(e)}")
-        await message.reply(f"Произошла ошибка при обработке видео-заметки: {str(e)}")
+        await message.reply(f"Произошла ошибка при обработке видео-кружка: {str(e)}")
 
 
 async def summarize_text(text: str) -> str:
@@ -180,14 +180,14 @@ async def summarize_text(text: str) -> str:
     5. Определите основную тему или темы сообщения и укажите их в начале резюме.
     6. Если в тексте есть какие-либо действия или рекомендации, выделите их в отдельный маркированный список.
     7. В конце резюме добавьте короткий параграф (2-3 предложения) с аналитическим заключением или выводом на основе содержания сообщения.
-
+    8. Форматирование: - Используй **жирный текст** для выделения ключевых слов или фраз. - Используй *курсив* для определений или акцентирования. - Для списков используй * в начале строки. - Код оформляй в соответствии со стандартами Telegram: ```язык_программирования // твой код здесь ```
     Создайте краткое резюме текста. Ваше резюме должно быть информативным, структурированным и легким для быстрого восприятия.
     """
 }
 
         ],
         model="gemma2-9b-it",
-        temperature=0.5,
+        temperature=0.7,
         max_tokens=4096,
         top_p=1,
         stream=False
@@ -254,7 +254,7 @@ async def process_audio_message(message: Message, bot: Bot):
 
 @router.message(F.content_type.in_({"voice", "audio", "document", "video", "video_note"}))
 async def process_media_message(message: Message, bot: Bot):
-    """Обрабатывает голосовые сообщения, аудио, документы, видео и видео-заметки."""
+    """Обрабатывает голосовые сообщения, аудио, документы, видео икружказаметки."""
     file = message.voice or message.audio or message.document or message.video or message.video_note
     if file.file_size > MAX_FILE_SIZE:
         await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваш файл слишком большой.")
@@ -298,7 +298,7 @@ async def process_unsupported_content(message: Message):
     content_type = "анимацией" if isinstance(message.content_type, Animation) else "гифками и стикерами"
     response = (
         f"Извините, я не могу работать с {content_type}. "
-        "Я обрабатываю только голосовые сообщения, видео, видео-заметки и аудиофайлы (mp3, wav, oga). "
+        "Я обрабатываю только голосовые сообщения, видео, видео-кружочки и аудиофайлы (mp3, wav, oga). "
         "Пожалуйста, отправьте один из поддерживаемых типов файлов. "
         f"Максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ."
     )
@@ -322,3 +322,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
