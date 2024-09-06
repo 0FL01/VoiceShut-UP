@@ -1,11 +1,14 @@
-# Используем официальный образ Python 3.10 в качестве базового образа
-FROM python:3.10-slim
+# Используем официальный образ Python 3.10 Alpine в качестве базового образа
+FROM python:3.10-alpine
 
-# Устанавливаем зависимости для работы
-RUN apt-get update && \ 
-apt-get install -y libasound2-dev gcc ffmpeg && \
-apt-get clean && \
-rm -rf /var/lib/apt/lists/*
+# Устанавливаем зависимости для работы без сохранения кэша
+RUN apk add --no-cache \
+    gcc \
+    musl-dev \
+    alsa-lib \
+    alsa-lib-dev \
+    ffmpeg \
+    build-base
 
 # Создаем рабочую директорию
 WORKDIR /app
@@ -13,11 +16,13 @@ WORKDIR /app
 # Копируем файлы в контейнер
 COPY requirements.txt bot.py ./
 
-# Устанавливаем зависимости
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# Устанавливаем зависимости без сохранения кэша
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Устанавливаем переменные окружения для корректной работы aiogram
 ENV PYTHONUNBUFFERED=1
 
 # Запускаем скрипт
 CMD ["python", "bot.py"]
+
