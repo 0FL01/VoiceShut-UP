@@ -232,7 +232,55 @@ async def summarize_text(text: str) -> str:
 
 def split_message(message: str, max_length: int) -> list:
     """Разбивает сообщение на части длиной не более max_length."""
-    return [message[i:i + max_length] for i in range(0, len(message), max_length)]
+    if len(message) <= max_length:
+        return [message]
+    
+    parts = []
+    current_part = ""
+    paragraphs = message.split('\n\n')
+    
+    for paragraph in paragraphs:
+        if len(current_part) + len(paragraph) + 2 <= max_length:
+            if current_part:
+                current_part += '\n\n'
+            current_part += paragraph
+        else:
+            if current_part:
+                parts.append(current_part)
+            current_part = paragraph
+            
+            # Если параграф больше max_length, разбиваем его
+            while len(current_part) > max_length:
+                split_point = current_part[:max_length].rfind(' ')
+                if split_point == -1:
+                    split_point = max_length
+                parts.append(current_part[:split_point])
+                current_part = current_part[split_point:].lstrip()
+    
+    if current_part:
+        parts.append(current_part)
+    
+    return parts
+
+async def send_formatted_message(message: Message, text: str, title: str = None, parse_mode: str = "HTML"):
+    """Отправляет отформатированное сообщение с учетом максимальной длины."""
+    if title:
+        text = f"<b>{title}</b>\n\n{text}"
+    
+    if not validate_html(text):
+        logger.warning(f"Invalid HTML detected for {title}. Falling back to plain text.")
+        parse_mode = None
+        if title:
+            text = f"{title}\n\n{text}"
+    
+    messages = split_message(text, MAX_MESSAGE_LENGTH)
+    sent_messages = []
+    
+    for msg in messages:
+        sent_msg = await message.reply(text=msg, parse_mode=parse_mode)
+        sent_messages.append(sent_msg)
+    
+    return sent_messages
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -245,33 +293,29 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(welcome_message)
 
+
 async def process_audio(message: Message, bot: Bot, audio_path: str):
     """Обрабатывает аудио, выполняет транскрипцию и суммаризацию."""
     try:
+        # Получаем транскрипцию
         transcripted_text = await audio_to_text(audio_path)
         if transcripted_text:
+            # Отправляем транскрипцию
+            formatted_transcript = html.escape(transcripted_text)
+            await send_formatted_message(message, formatted_transcript, "Transcription")
+            
+            # Получаем и отправляем резюме
             summary = await summarize_text(transcripted_text)
             formatted_summary = format_html(summary)
-            response = (
-                f"<b>Transcription:</b>\n\n"
-                f"{html.escape(transcripted_text)}\n\n"
-                f"<b>Summary:</b>\n\n"
-                f"{formatted_summary}"
-            )
-            
-            if not validate_html(response):
-                logger.warning("Invalid HTML detected. Falling back to plain text.")
-                response = f"Transcription:\n\n{transcripted_text}\n\nSummary:\n\n{summary}"
-            
-            messages = split_message(response, MAX_MESSAGE_LENGTH)
-            for msg in messages:
-                await message.reply(text=msg, parse_mode="HTML" if validate_html(msg) else None)
+            await send_formatted_message(message, formatted_summary, "Summary")
+    
     except Exception as e:
         logger.error(f"Error processing audio: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")
     finally:
         if os.path.exists(audio_path):
             os.unlink(audio_path)
+
 
 @router.message(F.content_type.in_({"voice", "audio", "document"}))
 async def process_audio_message(message: Message, bot: Bot):
