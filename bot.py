@@ -14,6 +14,8 @@ import moviepy.editor as mp
 from dotenv import load_dotenv
 import tempfile
 import logging
+from html.parser import HTMLParser
+
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +32,27 @@ MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB in bytes
 router: Router = Router()
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
+class HTMLValidator(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append(tag)
+
+    def handle_endtag(self, tag):
+        if self.tags and self.tags[-1] == tag:
+            self.tags.pop()
+        else:
+            self.tags.append(f"/{tag}")
+
+    def is_valid(self):
+        return len(self.tags) == 0
+
+def validate_html(html_string):
+    validator = HTMLValidator()
+    validator.feed(html_string)
+    return validator.is_valid()
 
 def format_html(text):
     def code_block_replacer(match):
@@ -37,34 +60,47 @@ def format_html(text):
         language = match.group(1) or ''
         escaped_code = html.escape(code.strip())
         return f'<pre><code class="{language}">{escaped_code}</code></pre>'
-    
+
     # Replace code blocks with triple backticks
     text = re.sub(r'```(\w+)?\n(.*?)```', code_block_replacer, text, flags=re.DOTALL)
-    
+
     # Replace code blocks with single backticks
     text = re.sub(r'`(\w+)\n(.*?)`', code_block_replacer, text, flags=re.DOTALL)
-    
+
     # Replace list markers with HTML tags
     text = re.sub(r'^\* ', '• ', text, flags=re.MULTILINE)
-    
+
     # Replace bold text
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    
+
     # Replace italic text
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    
+
     # Replace inline code
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    
+
     # Remove Markdown-style headers (##, ###, etc.)
     text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
-    
+
     # Escape special HTML characters in the remaining text
     text = html.escape(text, quote=False)
-    
+
     # Unescape the HTML tags we've explicitly added
     text = re.sub(r'&lt;(/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre))&gt;', r'<\1>', text)
-    
+
+    # Ensure all tags are closed
+    open_tags = []
+    for match in re.finditer(r'<(/?)(\w+)[^>]*>', text):
+        if match.group(1) == '/':
+            if open_tags and open_tags[-1] == match.group(2):
+                open_tags.pop()
+        else:
+            open_tags.append(match.group(2))
+
+    # Close any remaining open tags
+    for tag in reversed(open_tags):
+        text += f'</{tag}>'
+
     return text
 
 
@@ -222,9 +258,14 @@ async def process_audio(message: Message, bot: Bot, audio_path: str):
                 f"<b>Summary:</b>\n\n"
                 f"{formatted_summary}"
             )
+            
+            if not validate_html(response):
+                logger.warning("Invalid HTML detected. Falling back to plain text.")
+                response = f"Transcription:\n\n{transcripted_text}\n\nSummary:\n\n{summary}"
+            
             messages = split_message(response, MAX_MESSAGE_LENGTH)
             for msg in messages:
-                await message.reply(text=msg, parse_mode="HTML")
+                await message.reply(text=msg, parse_mode="HTML" if validate_html(msg) else None)
     except Exception as e:
         logger.error(f"Error processing audio: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")

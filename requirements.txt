@@ -1,5 +1,6 @@
 aiogram
 pydub
 groq
+mistralai==0.0.7
 moviepy
 python-dotenv
