@@ -86,23 +86,9 @@ def format_html(text):
     text = html.escape(text, quote=False)
 
     # Unescape the HTML tags we've explicitly added
-    text = re.sub(r'&lt;(/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre))&gt;', r'<\1>', text)
-
-    # Ensure all tags are closed
-    open_tags = []
-    for match in re.finditer(r'<(/?)(\w+)[^>]*>', text):
-        if match.group(1) == '/':
-            if open_tags and open_tags[-1] == match.group(2):
-                open_tags.pop()
-        else:
-            open_tags.append(match.group(2))
-
-    # Close any remaining open tags
-    for tag in reversed(open_tags):
-        text += f'</{tag}>'
+    text = re.sub(r'&lt;(/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|tg-spoiler))&gt;', r'<\1>', text)
 
     return text
-
 
 async def audio_to_text(file_path: str) -> str:
     """Принимает путь к аудио файлу, возвращает текст файла."""
@@ -262,11 +248,19 @@ def split_message(message: str, max_length: int) -> list:
     
     return parts
 
-async def send_formatted_message(message: Message, text: str, title: str = None, parse_mode: str = "HTML"):
+async def send_formatted_message(message: Message, text: str, title: str = None, parse_mode: str = "HTML", use_spoiler: bool = False):
     """Отправляет отформатированное сообщение с учетом максимальной длины."""
     if title:
         text = f"<b>{title}</b>\n\n{text}"
     
+    if use_spoiler:
+        # Оборачиваем весь текст после заголовка в тег спойлера
+        parts = text.split('\n\n', 1)  # Разделяем заголовок и содержимое
+        if len(parts) > 1:
+            text = f"{parts[0]}\n\n<tg-spoiler>{parts[1]}</tg-spoiler>"
+        else:
+            text = f"<tg-spoiler>{text}</tg-spoiler>"
+
     if not validate_html(text):
         logger.warning(f"Invalid HTML detected for {title}. Falling back to plain text.")
         parse_mode = None
@@ -281,6 +275,7 @@ async def send_formatted_message(message: Message, text: str, title: str = None,
         sent_messages.append(sent_msg)
     
     return sent_messages
+
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -307,7 +302,12 @@ async def process_audio(message: Message, bot: Bot, audio_path: str):
             # Получаем и отправляем резюме
             summary = await summarize_text(transcripted_text)
             formatted_summary = format_html(summary)
-            await send_formatted_message(message, formatted_summary, "Summary")
+            await send_formatted_message(
+                message, 
+                formatted_summary, 
+                "Summary", 
+                use_spoiler=True  # Включаем спойлер для summary
+            )
     
     except Exception as e:
         logger.error(f"Error processing audio: {str(e)}")
