@@ -1,6 +1,7 @@
 services:
   telega-whisper:
-    build: .
+    image: telega-whisper-summary-telega-whisper:latest
+    #build: .
     container_name: telega-whisper
     env_file:
       - .env
