@@ -264,13 +264,13 @@ async def summarize_text(text: str) -> str:
                 model='gemini-2.0-flash-001',
                 contents=[
                     genai_types.UserContent(
-                        parts=[genai_types.Part.from_text(system_prompt)]
+                        parts=[genai_types.Part.from_text(text=system_prompt)]
                     ),
                     genai_types.ModelContent(
-                        parts=[genai_types.Part.from_text("Понял, буду следовать указанным правилам форматирования и структуры.")]
+                        parts=[genai_types.Part.from_text(text="Понял, буду следовать указанным правилам форматирования и структуры.")]
                     ),
                     genai_types.UserContent(
-                        parts=[genai_types.Part.from_text(user_prompt)]
+                        parts=[genai_types.Part.from_text(text=user_prompt)]
                     )
                 ]
             )
