@@ -11,7 +11,6 @@ from aiogram.filters import Command
 from google import genai
 from google.genai import types as genai_types
 from pydub import AudioSegment
-import moviepy.editor as mp
 from dotenv import load_dotenv
 import tempfile
 import logging

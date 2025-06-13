@@ -1,5 +1,4 @@
 aiogram
 pydub
 google-genai==1.20.0
-moviepy
 python-dotenv
