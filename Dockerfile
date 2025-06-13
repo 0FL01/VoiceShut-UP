@@ -1,5 +1,5 @@
 # Используем официальный образ Python 3.10 Alpine в качестве базового образа
-FROM python:3.10-alpine
+FROM python:3.12-alpine
 
 # Устанавливаем зависимости для работы без сохранения кэша
 RUN apk add --no-cache \
