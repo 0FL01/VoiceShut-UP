@@ -1,0 +1,151 @@
+name: CI/CD Pipeline для VoiceShut-UP Bot
+
+on:
+  push:
+    branches: [ "main" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  DOCKER_IMAGE: 0fl01/voice-shut-up-bot
+
+jobs:
+  build:
+    runs-on: ubuntu-latest 
+    outputs: 
+      sha_short: ${{ steps.vars.outputs.sha_short }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 
+
+      - name: Set short SHA and create artifact file
+        id: vars
+        run: |
+          GIT_SHA=$(git rev-parse --short HEAD)
+          if [ -z "$GIT_SHA" ]; then
+            echo "Error: git rev-parse --short HEAD returned empty string!"
+            exit 1
+          fi
+          echo "sha_short=${GIT_SHA}" >> $GITHUB_OUTPUT
+          echo "${GIT_SHA}" > sha.txt
+          echo "Short SHA: ${GIT_SHA}"
+          
+      - name: Upload SHA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha-artifact
+          path: sha.txt
+          if-no-files-found: error 
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.DOCKER_IMAGE }}:${{ steps.vars.outputs.sha_short }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=VoiceShut-UP Telegram Bot
+            org.opencontainers.image.description=Telegram bot for voice message transcription
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Download SHA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sha-artifact
+          path: .
+      
+      - name: Read SHA from artifact file
+        id: get_sha
+        run: echo "SHORT_SHA_VALUE=$(cat sha.txt)" >> $GITHUB_ENV
+        
+      - name: Deploy to server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DOCKER_IMAGE, SHORT_SHA_VALUE
+          script: |
+            if [ -z "$SHORT_SHA_VALUE" ]; then
+              echo "Error: SHORT_SHA_VALUE environment variable is empty. Cannot proceed with deployment."
+              exit 1
+            fi
+            echo "Using Short SHA: $SHORT_SHA_VALUE for deployment"
+        
+            mkdir -p ${{ secrets.SERVICE_DIR }}
+            cd ${{ secrets.SERVICE_DIR }}
+        
+            echo "Creating .env file..."
+            cat << 'EOF' > .env
+            BOT_TOKEN=${{ secrets.BOT_TOKEN }}
+            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            EOF
+            echo ".env file created."
+        
+            echo "Creating docker-compose.yml file..."
+            cat << EOF > docker-compose.yml
+            services:
+              voice-shut-up-bot:
+                image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}
+                container_name: voice-shut-up-bot
+                restart: unless-stopped
+                env_file:
+                  - .env
+                volumes:
+                  - ./logs:/app/logs
+            volumes:
+              logs: {}
+            EOF
+            echo "docker-compose.yml file created."
+        
+            mkdir -p ./logs
+        
+            echo "Using Docker Image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}"
+        
+            echo "Pulling Docker image..."
+            docker compose pull
+            echo "Image pulled."
+        
+            echo "Stopping existing container (if any)..."
+            docker compose down || true
+            echo "Starting services with docker compose up..."
+            docker compose up -d
+            echo "Services started."
+        
+            echo "Current container status:"
+            docker compose ps
+        
+            echo "Pruning unused Docker images..."
+            docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" | \
+            grep "^0fl01/voice-shut-up-bot" | \
+            awk '{ print $2 }' | \
+            xargs -r docker rmi -f
+
+            echo "Docker images pruned."
+        
+      - name: Clean up local SHA artifact
+        run: rm sha.txt 
