@@ -8,7 +8,8 @@ import subprocess
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.types import Message, Voice, Video, Document, Animation, Sticker, VideoNote
 from aiogram.filters import Command
-from groq import AsyncGroq
+from google import genai
+from google.genai import types as genai_types
 from pydub import AudioSegment
 import moviepy.editor as mp
 from dotenv import load_dotenv
@@ -24,16 +25,13 @@ logger = logging.getLogger(__name__)
 # Загрузка переменных окружения из файла .env
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAX_MESSAGE_LENGTH = 4096
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB in bytes
 
 router: Router = Router()
-groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-genai.configure(api_key=GOOGLE_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-2.0-flash-exp")
+gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
 
 class HTMLValidator(HTMLParser):
     def __init__(self):
@@ -94,13 +92,43 @@ def format_html(text):
     return text
 
 async def audio_to_text(file_path: str) -> str:
-    """Принимает путь к аудио файлу, возвращает текст файла."""
-    with open(file_path, "rb") as audio_file:
-        transcript = await groq_client.audio.transcriptions.create(
-            file=(os.path.basename(file_path), audio_file),
-            model="whisper-large-v3"
+    """Принимает путь к аудио файлу, возвращает текст файла используя Gemini."""
+    try:
+        with open(file_path, "rb") as audio_file:
+            audio_data = audio_file.read()
+        
+        # Определяем MIME тип на основе расширения файла
+        file_extension = os.path.splitext(file_path)[1].lower()
+        mime_type_map = {
+            '.mp3': 'audio/mpeg',
+            '.wav': 'audio/wav',
+            '.oga': 'audio/ogg',
+            '.ogg': 'audio/ogg',
+            '.m4a': 'audio/mp4',
+            '.aac': 'audio/aac'
+        }
+        mime_type = mime_type_map.get(file_extension, 'audio/mpeg')
+        
+        # Создаем Part с аудио данными
+        audio_part = genai_types.Part.from_bytes(
+            data=audio_data,
+            mime_type=mime_type
         )
-    return transcript.text
+        
+        # Используем Gemini для транскрипции
+        response = await asyncio.to_thread(
+            lambda: gemini_client.models.generate_content(
+                model='gemini-2.0-flash-001',
+                contents=[
+                    "Пожалуйста, транскрибируйте этот аудио файл в текст на том языке, на котором говорят в записи. Верните только текст транскрипции без дополнительных комментариев.",
+                    audio_part
+                ]
+            )
+        )
+        return response.text
+    except Exception as e:
+        logger.error(f"Error in audio_to_text: {str(e)}")
+        raise Exception(f"Ошибка при транскрипции аудио: {str(e)}")
 
 async def convert_oga_to_mp3(input_path: str, output_path: str):
     """Конвертирует .oga файл в .mp3 с помощью ffmpeg."""
@@ -135,6 +163,35 @@ async def save_audio_as_mp3(bot: Bot, file: types.File, file_id: str, file_uniqu
 
     return temp_path
 
+async def save_video_as_mp3(bot: Bot, video: Video) -> str:
+    """Скачивает видео файл и сохраняет аудиодорожку в формате mp3."""
+    if video.file_size > MAX_FILE_SIZE:
+        raise ValueError("Файл слишком большой")
+
+    video_file_info = await bot.get_file(video.file_id)
+    video_file = io.BytesIO()
+    await bot.download_file(video_file_info.file_path, video_file)
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as video_temp_file:
+        video_temp_file.write(video_file.getvalue())
+        video_path = video_temp_file.name
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as audio_temp_file:
+        audio_path = audio_temp_file.name
+
+    # Используем ffmpeg для извлечения аудио из видео
+    command = ['ffmpeg', '-y', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg error: {stderr.decode()}")
+
+    os.unlink(video_path)
+    return audio_path
 
 async def save_video_note_as_mp3(bot: Bot, video_note: VideoNote) -> str:
     """Скачивает видео-заметку (кружочек) и сохраняет аудиодорожку в формате mp3."""
@@ -204,11 +261,18 @@ async def summarize_text(text: str) -> str:
 
     try:
         response = await asyncio.to_thread(
-            lambda: gemini_model.generate_content(
-                [
-                    {"role": "user", "parts": [system_prompt]},
-                    {"role": "model", "parts": ["Понял, буду следовать указанным правилам форматирования и структуры."]},
-                    {"role": "user", "parts": [user_prompt]}
+            lambda: gemini_client.models.generate_content(
+                model='gemini-2.0-flash-001',
+                contents=[
+                    genai_types.UserContent(
+                        parts=[genai_types.Part.from_text(system_prompt)]
+                    ),
+                    genai_types.ModelContent(
+                        parts=[genai_types.Part.from_text("Понял, буду следовать указанным правилам форматирования и структуры.")]
+                    ),
+                    genai_types.UserContent(
+                        parts=[genai_types.Part.from_text(user_prompt)]
+                    )
                 ]
             )
         )
@@ -285,7 +349,7 @@ async def cmd_start(message: types.Message):
     welcome_message = (
         "Привет! Я бот, который может транскрибировать и суммировать голосовые сообщения, видео и аудиофайлы. "
         "Просто отправь мне голосовое сообщение, видео или аудиофайл (mp3, wav, oga), и я преобразую его в текст и создам краткое резюме.\n\n"
-        "P.S Данный бот работает на мощностях Groq, использует две модели: whisper-large-v3 и gemma2-9b-it\n\n"
+        "P.S Данный бот работает на мощностях Google Gemini AI, использует модель gemini-2.0-flash для транскрипции и суммаризации\n\n"
         f"Важно: максимальный размер файла для обработки - {MAX_FILE_SIZE // (1024 * 1024)} МБ."
     )
     await message.answer(welcome_message)
@@ -319,29 +383,9 @@ async def process_audio(message: Message, bot: Bot, audio_path: str):
             os.unlink(audio_path)
 
 
-@router.message(F.content_type.in_({"voice", "audio", "document"}))
-async def process_audio_message(message: Message, bot: Bot):
-    """Обрабатывает голосовые сообщения, аудио и документы (mp3, wav, oga)."""
-    file = message.voice or message.audio or message.document
-    if file.file_size > MAX_FILE_SIZE:
-        await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваш файл слишком большой.")
-        return
-
-    if message.document and not message.document.file_name.lower().endswith(('.mp3', '.wav', '.oga')):
-        await message.reply("Извините, я могу обрабатывать только аудиофайлы форматов mp3, wav и oga.")
-        return
-
-    await message.reply("Обрабатываю ваш аудиофайл, это может занять некоторое время...")
-    try:
-        audio_path = await save_audio_as_mp3(bot, file, file.file_id, file.file_unique_id)
-        await process_audio(message, bot, audio_path)
-    except Exception as e:
-        logger.error(f"Error processing audio message: {str(e)}")
-        await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")
-
 @router.message(F.content_type.in_({"voice", "audio", "document", "video", "video_note"}))
 async def process_media_message(message: Message, bot: Bot):
-    """Обрабатывает голосовые сообщения, аудио, документы, видео икружказаметки."""
+    """Обрабатывает голосовые сообщения, аудио, документы, видео и кружочки-заметки."""
     file = message.voice or message.audio or message.document or message.video or message.video_note
     if file.file_size > MAX_FILE_SIZE:
         await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваш файл слишком большой.")
@@ -363,21 +407,6 @@ async def process_media_message(message: Message, bot: Bot):
     except Exception as e:
         logger.error(f"Error processing media message: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке медиафайла: {str(e)}")
-
-@router.message(F.content_type == "video")
-async def process_video_message(message: Message, bot: Bot):
-    """Принимает все видео сообщения, извлекает аудио, транскрибирует в текст и создает резюме."""
-    if message.video.file_size > MAX_FILE_SIZE:
-        await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваше видео слишком большое.")
-        return
-
-    await message.reply("Обрабатываю ваше видео, это может занять некоторое время...")
-    try:
-        audio_path = await save_video_as_mp3(bot, message.video)
-        await process_audio(message, bot, audio_path)
-    except Exception as e:
-        logger.error(f"Error processing video message: {str(e)}")
-        await message.reply(f"Произошла ошибка при обработке видео: {str(e)}")
 
 @router.message(F.content_type.in_({"animation", "sticker"}))
 async def process_unsupported_content(message: Message):

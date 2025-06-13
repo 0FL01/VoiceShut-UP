@@ -1,6 +1,5 @@
 aiogram
 pydub
-groq
-google-generativeai
+google-genai==1.20.0
 moviepy
 python-dotenv
