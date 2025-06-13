@@ -7,6 +7,7 @@ on:
       - 'v*'
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 env:
   DOCKER_IMAGE: 0fl01/voice-shut-up-bot
@@ -69,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Download SHA artifact
         uses: actions/download-artifact@v4
