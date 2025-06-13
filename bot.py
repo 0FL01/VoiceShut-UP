@@ -120,8 +120,58 @@ def retry_on_api_error(max_retries=5, delay=3):
         return wrapper
     return decorator
 
-@retry_on_api_error(max_retries=5, delay=3)
-async def audio_to_text(file_path: str) -> str:
+def retry_with_model_fallback():
+    """Декоратор с fallback на резервную модель"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Сначала пытаемся с gemini-2.5-flash-preview-05-20
+            primary_model = 'gemini-2.5-flash-preview-05-20'
+            fallback_model = 'gemini-2.0-flash-001'
+            
+            # 3 попытки с основной моделью
+            for attempt in range(3):
+                try:
+                    logger.info(f"Attempting with {primary_model}, attempt {attempt + 1}/3")
+                    return await func(*args, model=primary_model, **kwargs)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    logger.warning(f"Error with {primary_model} on attempt {attempt + 1}: {str(e)}")
+                    
+                    if attempt < 2:  # Не последняя попытка с основной моделью
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        logger.info(f"All attempts with {primary_model} failed, switching to {fallback_model}")
+                        break
+            
+            # Переключаемся на резервную модель с ретраями
+            last_exception = None
+            for attempt in range(5):
+                try:
+                    logger.info(f"Attempting with {fallback_model}, attempt {attempt + 1}/5")
+                    return await func(*args, model=fallback_model, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    error_str = str(e).lower()
+                    
+                    # Проверяем на временные ошибки API
+                    if any(code in error_str for code in ['503', '429', '500', 'overloaded', 'unavailable', 'timeout']):
+                        if attempt < 4:  # Не последняя попытка
+                            logger.warning(f"API error with {fallback_model} on attempt {attempt + 1}/5: {str(e)}. Retrying in 3 seconds...")
+                            await asyncio.sleep(3)
+                            continue
+                    
+                    # Если это не временная ошибка или последняя попытка, поднимаем исключение
+                    raise e
+            
+            # Если все попытки исчерпаны
+            raise last_exception
+        return wrapper
+    return decorator
+
+@retry_with_model_fallback()
+async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
     """Принимает путь к аудио файлу, возвращает текст файла используя Gemini."""
     try:
         with open(file_path, "rb") as audio_file:
@@ -148,7 +198,7 @@ async def audio_to_text(file_path: str) -> str:
         # Используем Gemini для транскрипции
         response = await asyncio.to_thread(
             lambda: gemini_client.models.generate_content(
-                model='gemini-2.0-flash-001',
+                model=model,
                 contents=[
                     "Пожалуйста, транскрибируйте этот аудио файл в текст на том языке, на котором говорят в записи. Верните только текст транскрипции без дополнительных комментариев.",
                     audio_part
@@ -157,7 +207,7 @@ async def audio_to_text(file_path: str) -> str:
         )
         return response.text
     except Exception as e:
-        logger.error(f"Error in audio_to_text: {str(e)}")
+        logger.error(f"Error in audio_to_text with model {model}: {str(e)}")
         raise Exception(f"Ошибка при транскрипции аудио: {str(e)}")
 
 async def convert_oga_to_mp3(input_path: str, output_path: str):
@@ -269,8 +319,8 @@ async def process_video_note_message(message: Message, bot: Bot):
         await message.reply(f"Произошла ошибка при обработке видео-кружка: {str(e)}")
 
 
-@retry_on_api_error(max_retries=5, delay=3)
-async def summarize_text(text: str) -> str:
+@retry_with_model_fallback()
+async def summarize_text(text: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
     """Создает краткое резюме текста с использованием Google Gemini."""
     system_prompt = """Вы - высококвалифицированный ассистент по обработке и анализу текста, специализирующийся на создании кратких и информативных резюме голосовых сообщений. Ваши ответы всегда должны быть на русском языке. Избегайте использования эмодзи, смайликов и разговорных выражений, таких как 'говорящий' или 'говоритель'. При форматировании текста используйте следующие обозначения: 
     * **жирный текст** для выделения ключевых понятий 
@@ -293,7 +343,7 @@ async def summarize_text(text: str) -> str:
     try:
         response = await asyncio.to_thread(
             lambda: gemini_client.models.generate_content(
-                model='gemini-2.0-flash-001',
+                model=model,
                 contents=[
                     genai_types.UserContent(
                         parts=[genai_types.Part.from_text(text=system_prompt)]
@@ -309,7 +359,7 @@ async def summarize_text(text: str) -> str:
         )
         return response.text
     except Exception as e:
-        logger.error(f"Error in summarize_text: {str(e)}")
+        logger.error(f"Error in summarize_text with model {model}: {str(e)}")
         return f"Ошибка при создании резюме: {str(e)}"
 
 
