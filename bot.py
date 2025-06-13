@@ -215,6 +215,11 @@ async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-0
             )
         )
         
+        # Проверяем, что ответ содержит текст
+        if not response or not response.text:
+            logger.warning(f"Empty or None response from {model}")
+            raise Exception("Получен пустой ответ от API. Возможно, аудио не содержит речи или модель не смогла его обработать.")
+        
         transcript_length = len(response.text)
         logger.info(f"Transcription completed successfully. Text length: {transcript_length} characters")
         return response.text
@@ -404,6 +409,11 @@ async def summarize_text(text: str, model: str = 'gemini-2.5-flash-preview-05-20
                 ]
             )
         )
+        
+        # Проверяем, что ответ содержит текст
+        if not response or not response.text:
+            logger.warning(f"Empty or None response from {model} during summarization")
+            return "Ошибка: Получен пустой ответ от API при создании резюме."
         
         summary_length = len(response.text)
         logger.info(f"Summarization completed successfully. Summary length: {summary_length} characters")
