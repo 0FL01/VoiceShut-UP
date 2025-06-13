@@ -90,6 +90,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: DOCKER_IMAGE, SHORT_SHA_VALUE
           script: |
+            set -e  # Остановка скрипта при любой ошибке
+            
             if [ -z "$SHORT_SHA_VALUE" ]; then
               echo "Error: SHORT_SHA_VALUE environment variable is empty. Cannot proceed with deployment."
               exit 1
@@ -127,23 +129,41 @@ jobs:
             echo "Using Docker Image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}"
         
             echo "Pulling Docker image..."
-            docker compose pull
-            echo "Image pulled."
+            if ! docker compose pull; then
+              echo "Error: Failed to pull Docker image. Check network connection and image availability."
+              exit 1
+            fi
+            echo "Image pulled successfully."
         
             echo "Stopping existing container (if any)..."
             docker compose down || true
             echo "Starting services with docker compose up..."
-            docker compose up -d
-            echo "Services started."
+            
+            if ! docker compose up -d; then
+              echo "Error: Failed to start services with docker compose."
+              exit 1
+            fi
+            echo "Services started successfully."
         
-            echo "Current container status:"
+            # Проверяем что контейнер действительно запустился
+            echo "Checking container status..."
+            sleep 5  # Даем время контейнеру запуститься
+            
+            if ! docker compose ps --format "table {{.Name}}\t{{.State}}" | grep -q "running"; then
+              echo "Error: No containers are running. Deployment failed."
+              docker compose ps
+              docker compose logs
+              exit 1
+            fi
+            
+            echo "Container is running successfully:"
             docker compose ps
         
             echo "Pruning unused Docker images..."
             docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" | \
             grep "^0fl01/voice-shut-up-bot" | \
             awk '{ print $2 }' | \
-            xargs -r docker rmi -f
+            xargs -r docker rmi -f || true  # Не останавливаем выполнение при ошибке очистки
 
             echo "Docker images pruned."
         
