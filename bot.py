@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import tempfile
 import logging
 from html.parser import HTMLParser
+from functools import wraps
 
 
 # Настройка логирования
@@ -90,6 +91,36 @@ def format_html(text):
 
     return text
 
+def retry_on_api_error(max_retries=5, delay=3):
+    """Декоратор для повторных попыток при ошибках API"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    error_str = str(e).lower()
+                    
+                    # Проверяем на временные ошибки API
+                    if any(code in error_str for code in ['503', '429', '500', 'overloaded', 'unavailable', 'timeout']):
+                        if attempt < max_retries - 1:  # Не последняя попытка
+                            logger.warning(f"API error on attempt {attempt + 1}/{max_retries}: {str(e)}. Retrying in {delay} seconds...")
+                            await asyncio.sleep(delay)
+                            continue
+                    
+                    # Если это не временная ошибка или последняя попытка, поднимаем исключение
+                    raise e
+            
+            # Если все попытки исчерпаны
+            raise last_exception
+        return wrapper
+    return decorator
+
+@retry_on_api_error(max_retries=5, delay=3)
 async def audio_to_text(file_path: str) -> str:
     """Принимает путь к аудио файлу, возвращает текст файла используя Gemini."""
     try:
@@ -238,6 +269,7 @@ async def process_video_note_message(message: Message, bot: Bot):
         await message.reply(f"Произошла ошибка при обработке видео-кружка: {str(e)}")
 
 
+@retry_on_api_error(max_retries=5, delay=3)
 async def summarize_text(text: str) -> str:
     """Создает краткое резюме текста с использованием Google Gemini."""
     system_prompt = """Вы - высококвалифицированный ассистент по обработке и анализу текста, специализирующийся на создании кратких и информативных резюме голосовых сообщений. Ваши ответы всегда должны быть на русском языке. Избегайте использования эмодзи, смайликов и разговорных выражений, таких как 'говорящий' или 'говоритель'. При форматировании текста используйте следующие обозначения: 
