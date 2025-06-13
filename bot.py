@@ -174,8 +174,14 @@ def retry_with_model_fallback():
 async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
     """Принимает путь к аудио файлу, возвращает текст файла используя Gemini."""
     try:
+        logger.info(f"Starting audio transcription with model {model}")
+        logger.info(f"Reading audio file: {file_path}")
+        
         with open(file_path, "rb") as audio_file:
             audio_data = audio_file.read()
+        
+        audio_size_mb = len(audio_data) / (1024 * 1024)
+        logger.info(f"Audio file size: {audio_size_mb:.2f} MB")
         
         # Определяем MIME тип на основе расширения файла
         file_extension = os.path.splitext(file_path)[1].lower()
@@ -188,14 +194,17 @@ async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-0
             '.aac': 'audio/aac'
         }
         mime_type = mime_type_map.get(file_extension, 'audio/mpeg')
+        logger.info(f"Detected MIME type: {mime_type}")
         
         # Создаем Part с аудио данными
+        logger.info("Creating audio part for Gemini API")
         audio_part = genai_types.Part.from_bytes(
             data=audio_data,
             mime_type=mime_type
         )
         
         # Используем Gemini для транскрипции
+        logger.info(f"Sending transcription request to {model}")
         response = await asyncio.to_thread(
             lambda: gemini_client.models.generate_content(
                 model=model,
@@ -205,6 +214,9 @@ async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-0
                 ]
             )
         )
+        
+        transcript_length = len(response.text)
+        logger.info(f"Transcription completed successfully. Text length: {transcript_length} characters")
         return response.text
     except Exception as e:
         logger.error(f"Error in audio_to_text with model {model}: {str(e)}")
@@ -212,6 +224,7 @@ async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-0
 
 async def convert_oga_to_mp3(input_path: str, output_path: str):
     """Конвертирует .oga файл в .mp3 с помощью ffmpeg."""
+    logger.info(f"Converting OGA to MP3: {input_path} -> {output_path}")
     command = ['ffmpeg', '-y', '-i', input_path, '-c:a', 'libmp3lame', '-q:a', '3', '-ac', '1', '-ar', '22050', output_path]
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -220,37 +233,55 @@ async def convert_oga_to_mp3(input_path: str, output_path: str):
     )
     stdout, stderr = await process.communicate()
     if process.returncode != 0:
+        logger.error(f"FFmpeg conversion failed: {stderr.decode()}")
         raise Exception(f"FFmpeg error: {stderr.decode()}")
+    logger.info("OGA to MP3 conversion completed successfully")
 
 async def save_audio_as_mp3(bot: Bot, file: types.File, file_id: str, file_unique_id: str) -> str:
     """Скачивает аудио файл и сохраняет в формате mp3."""
+    logger.info(f"Starting audio download and conversion. File ID: {file_id}")
+    
     file_info = await bot.get_file(file_id)
+    logger.info(f"File info retrieved. Path: {file_info.file_path}, Size: {file_info.file_size} bytes")
+    
     file_content = io.BytesIO()
+    logger.info("Downloading file content...")
     await bot.download_file(file_info.file_path, file_content)
+    logger.info("File download completed")
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
         temp_path = temp_file.name
 
     if file_info.file_path.lower().endswith('.oga'):
+        logger.info("Processing OGA file format")
         with tempfile.NamedTemporaryFile(delete=False, suffix='.oga') as input_file:
             input_file.write(file_content.getvalue())
             input_path = input_file.name
         await convert_oga_to_mp3(input_path, temp_path)
         os.unlink(input_path)
     else:
+        logger.info("Processing non-OGA audio format with pydub")
         audio = AudioSegment.from_file(io.BytesIO(file_content.getvalue()), format=file_info.file_path.split('.')[-1])
         audio.export(temp_path, format="mp3")
+        logger.info("Audio conversion with pydub completed")
 
+    logger.info(f"Audio saved as MP3: {temp_path}")
     return temp_path
 
 async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     """Скачивает видео файл и сохраняет аудиодорожку в формате mp3."""
+    logger.info(f"Starting video processing. Video duration: {video.duration}s, Size: {video.file_size} bytes")
+    
     if video.file_size > MAX_FILE_SIZE:
         raise ValueError("Файл слишком большой")
 
     video_file_info = await bot.get_file(video.file_id)
+    logger.info(f"Video file info retrieved: {video_file_info.file_path}")
+    
     video_file = io.BytesIO()
+    logger.info("Downloading video file...")
     await bot.download_file(video_file_info.file_path, video_file)
+    logger.info("Video download completed")
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as video_temp_file:
         video_temp_file.write(video_file.getvalue())
@@ -259,6 +290,7 @@ async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as audio_temp_file:
         audio_path = audio_temp_file.name
 
+    logger.info(f"Extracting audio from video using ffmpeg: {video_path} -> {audio_path}")
     # Используем ffmpeg для извлечения аудио из видео
     command = ['ffmpeg', '-y', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path]
     process = await asyncio.create_subprocess_exec(
@@ -268,19 +300,27 @@ async def save_video_as_mp3(bot: Bot, video: Video) -> str:
     )
     stdout, stderr = await process.communicate()
     if process.returncode != 0:
+        logger.error(f"FFmpeg video processing failed: {stderr.decode()}")
         raise Exception(f"FFmpeg error: {stderr.decode()}")
 
+    logger.info("Audio extraction from video completed successfully")
     os.unlink(video_path)
     return audio_path
 
 async def save_video_note_as_mp3(bot: Bot, video_note: VideoNote) -> str:
     """Скачивает видео-заметку (кружочек) и сохраняет аудиодорожку в формате mp3."""
+    logger.info(f"Starting video note processing. Duration: {video_note.duration}s, Size: {video_note.file_size} bytes")
+    
     if video_note.file_size > MAX_FILE_SIZE:
         raise ValueError("Файл слишком большой")
 
     video_file_info = await bot.get_file(video_note.file_id)
+    logger.info(f"Video note file info retrieved: {video_file_info.file_path}")
+    
     video_file = io.BytesIO()
+    logger.info("Downloading video note...")
     await bot.download_file(video_file_info.file_path, video_file)
+    logger.info("Video note download completed")
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as video_temp_file:
         video_temp_file.write(video_file.getvalue())
@@ -289,6 +329,7 @@ async def save_video_note_as_mp3(bot: Bot, video_note: VideoNote) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as audio_temp_file:
         audio_path = audio_temp_file.name
 
+    logger.info(f"Extracting audio from video note using ffmpeg: {video_path} -> {audio_path}")
     # Используем ffmpeg для извлечения аудио из видео
     command = ['ffmpeg', '-y', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path]
     process = await asyncio.create_subprocess_exec(
@@ -298,8 +339,10 @@ async def save_video_note_as_mp3(bot: Bot, video_note: VideoNote) -> str:
     )
     stdout, stderr = await process.communicate()
     if process.returncode != 0:
+        logger.error(f"FFmpeg video note processing failed: {stderr.decode()}")
         raise Exception(f"FFmpeg error: {stderr.decode()}")
 
+    logger.info("Audio extraction from video note completed successfully")
     os.unlink(video_path)
     return audio_path
 
@@ -322,6 +365,9 @@ async def process_video_note_message(message: Message, bot: Bot):
 @retry_with_model_fallback()
 async def summarize_text(text: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
     """Создает краткое резюме текста с использованием Google Gemini."""
+    logger.info(f"Starting text summarization with model {model}")
+    logger.info(f"Input text length: {len(text)} characters")
+    
     system_prompt = """Вы - высококвалифицированный ассистент по обработке и анализу текста, специализирующийся на создании кратких и информативных резюме голосовых сообщений. Ваши ответы всегда должны быть на русском языке. Избегайте использования эмодзи, смайликов и разговорных выражений, таких как 'говорящий' или 'говоритель'. При форматировании текста используйте следующие обозначения: 
     * **жирный текст** для выделения ключевых понятий 
     * *курсив* для обозначения важных, но второстепенных деталей 
@@ -341,6 +387,7 @@ async def summarize_text(text: str, model: str = 'gemini-2.5-flash-preview-05-20
     7. В конце резюме добавьте короткий параграф (2-3 предложения) с аналитическим заключением или выводом на основе содержания сообщения."""
 
     try:
+        logger.info(f"Sending summarization request to {model}")
         response = await asyncio.to_thread(
             lambda: gemini_client.models.generate_content(
                 model=model,
@@ -357,6 +404,9 @@ async def summarize_text(text: str, model: str = 'gemini-2.5-flash-preview-05-20
                 ]
             )
         )
+        
+        summary_length = len(response.text)
+        logger.info(f"Summarization completed successfully. Summary length: {summary_length} characters")
         return response.text
     except Exception as e:
         logger.error(f"Error in summarize_text with model {model}: {str(e)}")
@@ -438,16 +488,23 @@ async def cmd_start(message: types.Message):
 
 async def process_audio(message: Message, bot: Bot, audio_path: str):
     """Обрабатывает аудио, выполняет транскрипцию и суммаризацию."""
+    logger.info(f"Starting audio processing pipeline for message {message.message_id}")
+    
     try:
         # Получаем транскрипцию
+        logger.info("Phase 1: Starting transcription")
         transcripted_text = await audio_to_text(audio_path)
         if transcripted_text:
+            logger.info("Phase 1: Transcription completed, sending to user")
             # Отправляем транскрипцию
             formatted_transcript = html.escape(transcripted_text)
             await send_formatted_message(message, formatted_transcript, "Transcription")
+            logger.info("Phase 1: Transcription sent to user")
             
             # Получаем и отправляем резюме
+            logger.info("Phase 2: Starting summarization")
             summary = await summarize_text(transcripted_text)
+            logger.info("Phase 2: Summarization completed, formatting and sending")
             formatted_summary = format_html(summary)
             await send_formatted_message(
                 message, 
@@ -455,38 +512,54 @@ async def process_audio(message: Message, bot: Bot, audio_path: str):
                 "Summary", 
                 use_spoiler=True  # Включаем спойлер для summary
             )
+            logger.info("Phase 2: Summary sent to user")
+            logger.info(f"Audio processing pipeline completed successfully for message {message.message_id}")
     
     except Exception as e:
-        logger.error(f"Error processing audio: {str(e)}")
+        logger.error(f"Error processing audio for message {message.message_id}: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке аудио: {str(e)}")
     finally:
         if os.path.exists(audio_path):
+            logger.info(f"Cleaning up temporary audio file: {audio_path}")
             os.unlink(audio_path)
 
 
 @router.message(F.content_type.in_({"voice", "audio", "document", "video", "video_note"}))
 async def process_media_message(message: Message, bot: Bot):
     """Обрабатывает голосовые сообщения, аудио, документы, видео и кружочки-заметки."""
+    logger.info(f"Received media message {message.message_id} from user {message.from_user.id}")
+    
     file = message.voice or message.audio or message.document or message.video or message.video_note
+    logger.info(f"Media file details - Size: {file.file_size} bytes, File ID: {file.file_id}")
+    
     if file.file_size > MAX_FILE_SIZE:
+        logger.warning(f"File too large: {file.file_size} bytes > {MAX_FILE_SIZE} bytes")
         await message.reply(f"Извините, максимальный размер файла - {MAX_FILE_SIZE // (1024 * 1024)} МБ. Ваш файл слишком большой.")
         return
 
     if message.document and not message.document.file_name.lower().endswith(('.mp3', '.wav', '.oga')):
+        logger.warning(f"Unsupported document format: {message.document.file_name}")
         await message.reply("Извините, я могу обрабатывать только аудиофайлы форматов mp3, wav и oga.")
         return
 
     await message.reply("Обрабатываю ваш медиафайл, это может занять некоторое время...")
+    logger.info("Starting media file processing...")
+    
     try:
         if message.video:
+            logger.info("Processing video file")
             audio_path = await save_video_as_mp3(bot, message.video)
         elif message.video_note:
+            logger.info("Processing video note")
             audio_path = await save_video_note_as_mp3(bot, message.video_note)
         else:
+            logger.info("Processing audio/voice/document file")
             audio_path = await save_audio_as_mp3(bot, file, file.file_id, file.file_unique_id)
+        
+        logger.info(f"Media conversion completed, starting audio processing pipeline")
         await process_audio(message, bot, audio_path)
     except Exception as e:
-        logger.error(f"Error processing media message: {str(e)}")
+        logger.error(f"Error processing media message {message.message_id}: {str(e)}")
         await message.reply(f"Произошла ошибка при обработке медиафайла: {str(e)}")
 
 @router.message(F.content_type.in_({"animation", "sticker"}))
