@@ -125,8 +125,8 @@ def retry_with_model_fallback():
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            # Сначала пытаемся с gemini-2.5-flash-preview-05-20
-            primary_model = 'gemini-2.5-flash-preview-05-20'
+            # Сначала пытаемся с gemini-2.5-flash
+            primary_model = 'gemini-2.5-flash'
             fallback_model = 'gemini-2.0-flash-001'
             
             # 3 попытки с основной моделью
@@ -171,7 +171,7 @@ def retry_with_model_fallback():
     return decorator
 
 @retry_with_model_fallback()
-async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
+async def audio_to_text(file_path: str, model: str = 'gemini-2.5-flash') -> str:
     """Принимает путь к аудио файлу, возвращает текст файла используя Gemini."""
     try:
         logger.info(f"Starting audio transcription with model {model}")
@@ -368,7 +368,7 @@ async def process_video_note_message(message: Message, bot: Bot):
 
 
 @retry_with_model_fallback()
-async def summarize_text(text: str, model: str = 'gemini-2.5-flash-preview-05-20') -> str:
+async def summarize_text(text: str, model: str = 'gemini-2.5-flash') -> str:
     """Создает краткое резюме текста с использованием Google Gemini."""
     logger.info(f"Starting text summarization with model {model}")
     logger.info(f"Input text length: {len(text)} characters")
