@@ -117,10 +117,11 @@ jobs:
                 restart: unless-stopped
                 env_file:
                   - .env
-                volumes:
-                  - ./logs:/app/logs
-            volumes:
-              logs: {}
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "8m"
+                    max-file: "5"
             EOF
             echo "docker-compose.yml file created."
         
