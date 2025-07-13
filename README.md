@@ -1,7 +1,6 @@
-# Voice SHUT UP Telegram Bot (Go Edition)
+# Voice SHUT UP Telegram Bot
 
 [![Go Version](https://img.shields.io/badge/go-1.24%2B-blue.svg)](https://golang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![made-with-Go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg)](http://golang.org)
 
 Этот Telegram-бот транскрибирует голосовые сообщения, видео, видео-кружочки и аудиофайлы, а затем создает их краткое и развернутое резюме с помощью Google Gemini AI.
