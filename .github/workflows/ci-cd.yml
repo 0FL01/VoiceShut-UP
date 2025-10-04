@@ -13,14 +13,14 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest 
-    outputs: 
+    runs-on: ubuntu-latest
+    outputs:
       sha_short: ${{ steps.vars.outputs.sha_short }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0 
+          fetch-depth: 0
 
       - name: Set short SHA and create artifact file
         id: vars
@@ -33,13 +33,13 @@ jobs:
           echo "sha_short=${GIT_SHA}" >> $GITHUB_OUTPUT
           echo "${GIT_SHA}" > sha.txt
           echo "Short SHA: ${GIT_SHA}"
-          
+
       - name: Upload SHA artifact
         uses: actions/upload-artifact@v4
         with:
           name: sha-artifact
           path: sha.txt
-          if-no-files-found: error 
+          if-no-files-found: error
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -76,11 +76,11 @@ jobs:
         with:
           name: sha-artifact
           path: .
-      
+
       - name: Read SHA from artifact file
         id: get_sha
         run: echo "SHORT_SHA_VALUE=$(cat sha.txt)" >> $GITHUB_ENV
-        
+
       - name: Deploy to server
         uses: appleboy/ssh-action@master
         with:
@@ -90,7 +90,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: DOCKER_IMAGE, SHORT_SHA_VALUE
           script: |
-            set -e  # Остановка скрипта при любой ошибке
+            bash -c '
+            set -e
             
             if [ -z "$SHORT_SHA_VALUE" ]; then
               echo "Error: SHORT_SHA_VALUE environment variable is empty. Cannot proceed with deployment."
@@ -102,14 +103,14 @@ jobs:
             cd ${{ secrets.SERVICE_DIR }}
         
             echo "Creating .env file..."
-            bash -c 'cat << 'EOF' > .env
+            cat << "EOF" > .env
             BOT_TOKEN=${{ secrets.BOT_TOKEN }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-            EOF'
+            EOF
             echo ".env file created."
         
             echo "Creating docker-compose.yml file..."
-            bash -c 'cat << EOF > docker-compose.yml
+            cat << EOF > docker-compose.yml
             services:
               voice-shut-up-bot:
                 image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}
@@ -122,7 +123,7 @@ jobs:
                   options:
                     max-size: "8m"
                     max-file: "5"
-            EOF'
+            EOF
             echo "docker-compose.yml file created."
         
             mkdir -p ./logs
@@ -146,9 +147,8 @@ jobs:
             fi
             echo "Services started successfully."
         
-            # Проверяем что контейнер действительно запустился
             echo "Checking container status..."
-            sleep 5  # Даем время контейнеру запуститься
+            sleep 5
             
             if ! docker compose ps --format "table {{.Name}}\t{{.State}}" | grep -q "running"; then
               echo "Error: No containers are running. Deployment failed."
@@ -163,10 +163,11 @@ jobs:
             echo "Pruning unused Docker images..."
             docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" | \
             grep "^0fl01/voice-shut-up-bot" | \
-            awk '{ print $2 }' | \
-            xargs -r docker rmi -f || true  # Не останавливаем выполнение при ошибке очистки
+            awk "{ print \$2 }" | \
+            xargs -r docker rmi -f || true
 
             echo "Docker images pruned."
-        
+            '
+
       - name: Clean up local SHA artifact
-        run: rm sha.txt 
+        run: rm sha.txt
