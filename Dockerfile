@@ -9,6 +9,7 @@ RUN go mod download
 
 COPY . .
 
+RUN go mod tidy
 RUN go build -o /voice-shut-up-bot .
 
 FROM alpine:3.22
