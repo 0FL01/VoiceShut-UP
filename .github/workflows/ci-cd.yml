@@ -102,14 +102,14 @@ jobs:
             cd ${{ secrets.SERVICE_DIR }}
         
             echo "Creating .env file..."
-            cat << 'EOF' > .env
+            bash -c 'cat << 'EOF' > .env
             BOT_TOKEN=${{ secrets.BOT_TOKEN }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-            EOF
+            EOF'
             echo ".env file created."
         
             echo "Creating docker-compose.yml file..."
-            cat << EOF > docker-compose.yml
+            bash -c 'cat << EOF > docker-compose.yml
             services:
               voice-shut-up-bot:
                 image: ${DOCKER_IMAGE}:${SHORT_SHA_VALUE}
@@ -122,7 +122,7 @@ jobs:
                   options:
                     max-size: "8m"
                     max-file: "5"
-            EOF
+            EOF'
             echo "docker-compose.yml file created."
         
             mkdir -p ./logs
